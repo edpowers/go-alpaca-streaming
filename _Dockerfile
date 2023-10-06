@@ -1,0 +1,38 @@
+# Use the official Go image to create a build artifact.
+# FROM golang:latest as builder
+FROM golang:1.21rc2-bullseye as builder
+
+# Copy local code to the container image.
+WORKDIR /go/src/go-alpaca-streaming
+# COPY . /go/src/go-alpaca-streaming
+
+COPY . /go/src/go-alpaca-streaming
+# COPY .air.toml .
+
+# Install air
+# RUN go install github.com/cosmtrek/air@latest
+# Copy go mod and sum files and download dependencies
+COPY go.mod go.sum ./
+RUN go mod download
+
+RUN go build -o alpaca-client ./cmd/
+
+# Use a minimal image to run the compiled Go binary.
+# FROM debian:bullseye-slim
+
+# Copy air from builder
+# COPY --from=builder /go/bin/air /usr/local/bin/air
+
+# Copy the source code into the new layer
+# COPY --from=builder /go/src/go-alpaca-streaming /go/src/go-alpaca-streaming
+# Set the working directory inside the container
+# WORKDIR /go/src/go-alpaca-streaming
+
+CMD ["/bin/bash"]
+# RUN chmod +x /go/src/go-alpaca-streaming/alpaca-client
+
+# Run the web service on container startup.
+# CMD ["/go/src/go-alpaca-streaming/alpaca-client"]
+
+# Run realize to handle builds and live-reloads
+# CMD ["air", "-c", ".air.toml"]
