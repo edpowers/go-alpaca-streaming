@@ -2,33 +2,38 @@ package websocket_conn
 
 import (
 	"context"
+	"os"
+
+	// "regexp"
+	"strings"
 	"sync"
-	// "github.com/joho/godotenv"
+
 	"encoding/json"
-    "log"
-    "net/http"
+	"log"
+	"net/http"
 	"net/url"
-    // "os"
+
 	// "time"
 	"crypto/tls"
+
 	// "strings"
 	"fmt"
+	author_symbols "go-alpaca-streaming/pkg/symbols"
 	"go-alpaca-streaming/pkg/telegraf"
-	"go-alpaca-streaming/pkg/symbols"
 	"go-alpaca-streaming/pkg/utils"
-    "github.com/gorilla/websocket"
+
+	"github.com/gorilla/websocket"
 )
 
-
 type TradeData struct {
-	Symbol     	string
-	Price       float64
-	Size 		int
-	X     		string
-	C     		string
-	Time    	int64
-	I	 		int
-	Z     		string
+	Symbol string
+	Price  float64
+	Size   int
+	X      string
+	C      string
+	Time   int64
+	I      int
+	Z      string
 	// ... other fields
 }
 
@@ -46,7 +51,7 @@ func (auth *WebSocketAuthenticator) WaitForAuthentication() (bool, error) {
 
 	_, authMessage, err := auth.conn.ReadMessage()
 	if err != nil {
-		return false, fmt.Errorf("Failed to read auth acknowledgment: %v", err)
+		return false, fmt.Errorf("Failed to read auth acknowledgment: %v %v", authMessage, err)
 	}
 
 	err = json.Unmarshal(authMessage, &authResponse)
@@ -58,12 +63,10 @@ func (auth *WebSocketAuthenticator) WaitForAuthentication() (bool, error) {
 		if msg.T == "success" {
 			return true, nil
 		}
-		fmt.Errorf("Other error: %v", msg)
 	}
 
 	return false, fmt.Errorf("Authentication failed")
 }
-
 
 func authenticate(conn *websocket.Conn) bool {
 	authenticator := WebSocketAuthenticator{conn: conn}
@@ -77,11 +80,11 @@ func authenticate(conn *websocket.Conn) bool {
 
 func establishConnection(dialer websocket.Dialer, u url.URL) (*websocket.Conn, *http.Response, error) {
 	headers := http.Header{}
-	headers.Add("APCA-API-KEY-ID", "PKQSHIK7LOCNHMK36ZVP")
-	headers.Add("APCA-API-SECRET-KEY", "qSBkZcKND0mJhy0E3ZH0evnUIKJRDdKlPBtwzf7q")
+
+	headers.Add("APCA-API-KEY-ID", os.Getenv("APCA_API_KEY_ID"))
+	headers.Add("APCA-API-SECRET-KEY", os.Getenv("APCA_API_SECRET_KEY"))
 	return dialer.Dial(u.String(), headers)
 }
-
 
 func RunWebSocketClient(wg *sync.WaitGroup) {
 	// Decrease the counter when the goroutine completes
@@ -91,12 +94,12 @@ func RunWebSocketClient(wg *sync.WaitGroup) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// Prepare WebSocket URL
-	u := url.URL{Scheme: "wss", Host: "stream.data.sandbox.alpaca.markets", Path: "/v2/sip"}
+	u := url.URL{Scheme: "wss", Host: "stream.data.alpaca.markets", Path: "/v2/sip"}
 
 	// Custom Gorilla Dialer with TLS verification disabled
 	dialer := websocket.Dialer{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		EnableCompression:    true,
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+		EnableCompression: true,
 	}
 
 	conn, resp, err := establishConnection(dialer, u)
@@ -112,14 +115,14 @@ func RunWebSocketClient(wg *sync.WaitGroup) {
 	}
 
 	/*
-	// Prepare and send authentication data
-	authData := map[string]interface{}{
-		"action": "auth",
-		// "key":    os.Getenv("ALPACA_API_KEY"),
-		// "secret": os.Getenv("ALPACA_API_SECRET"),
-		"key":    "PKQSHIK7LOCNHMK36ZVP",
-		"secret": "qSBkZcKND0mJhy0E3ZH0evnUIKJRDdKlPBtwzf7q",
-	}
+		// Prepare and send authentication data
+		authData := map[string]interface{}{
+			"action": "auth",
+			// "key":    os.Getenv("ALPACA_API_KEY"),
+			// "secret": os.Getenv("ALPACA_API_SECRET"),
+			"key":    "PKQSHIK7LOCNHMK36ZVP",
+			"secret": "qSBkZcKND0mJhy0E3ZH0evnUIKJRDdKlPBtwzf7q",
+		}
 	*/
 
 	authenticator := WebSocketAuthenticator{conn: conn}
@@ -151,7 +154,7 @@ func RunWebSocketClient(wg *sync.WaitGroup) {
 	// Fixed type mismatch
 	subscriptionMessage := map[string]interface{}{
 		"action": "subscribe",
-		"trades": SymbolsToUse,  // Assuming the key is 'trades' and the value is an array of strings
+		"trades": SymbolsToUse, // Assuming the key is 'trades' and the value is an array of strings
 	}
 
 	// Send subscription message
@@ -160,7 +163,6 @@ func RunWebSocketClient(wg *sync.WaitGroup) {
 		log.Fatalf("Failed to subscribe: %v", err)
 		return
 	}
-
 
 	go func(ctx context.Context, conn *websocket.Conn) {
 		defer wg.Done() // Decrement counter when goroutine completes
@@ -172,20 +174,20 @@ func RunWebSocketClient(wg *sync.WaitGroup) {
 				log.Println("Context done, stopping.")
 				return
 			default:
-				log.Println("Reading message.")
+				// log.Println("Reading message.")
 				_, message, err := conn.ReadMessage()
 				if err != nil {
 					log.Printf("Error reading raw message: %v", err)
 					continue
 				}
 
-				receivedBytes := []byte(message)
-				receivedString := string(receivedBytes)
-				log.Println("Received message:", receivedString)
+				// receivedBytes := []byte(message)
+				//receivedString := string(receivedBytes)
+				// log.Println("Received message:", receivedString)
 
 				// If "success" message is already received, process as RawTrade
 				if successReceived {
-					log.Println("Processing as RawTrade.")
+					// log.Println("Processing as RawTrade.")
 					var trades []utils.RawTrade
 					if err := json.Unmarshal(message, &trades); err != nil {
 						log.Printf("Error unmarshalling array of trades: %v", err)
@@ -193,12 +195,13 @@ func RunWebSocketClient(wg *sync.WaitGroup) {
 					}
 
 					for _, trade := range trades {
-						log.Println("Handling trade: %v %v %v", trade, trades, message)
+						// For debugging:
+						// log.Println("Handling trade: %v %v %v", trade, trades, message)
 						handleWebSocket(trade)
 					}
 					continue
 				} else {
-					log.Println("Processing as GenericMessage. %v", message)
+					// log.Println("Processing as GenericMessage. %v", message)
 					// Try to unmarshal into a GenericMessage to look for "success"
 					var messages []GenericMessage
 					if err := json.Unmarshal(message, &messages); err != nil {
@@ -209,7 +212,7 @@ func RunWebSocketClient(wg *sync.WaitGroup) {
 
 					for _, msg := range messages {
 
-						if msg.T == "success" {
+						if msg.T == "success" || msg.T == "subscription" {
 							log.Println("Received success message.")
 							// Update the flag
 							successReceived = true
@@ -224,7 +227,6 @@ func RunWebSocketClient(wg *sync.WaitGroup) {
 
 	wg.Wait() // Wait for all goroutines to finish
 }
-
 
 func handleWebSocket(raw utils.RawTrade) {
 	// Convert Alpaca Trade to TradeData
@@ -246,21 +248,34 @@ func handleWebSocket(raw utils.RawTrade) {
 	}
 }
 
-
-
 // ConvertToTradeData converts Alpaca StreamTrade to your TradeData type
 func ConvertToTradeData(raw utils.RawTrade) *TradeData {
 	// Assume we have a function to convert data.T to epoch_ns
 	return &TradeData{
 		Symbol: raw.Symbol,
-		Price: raw.Price,
-		Size: raw.Size,
-		X: raw.X,
-		C: utils.MakeTradeCondition(raw),
-		Time: utils.ParseStrConvertToEpochNs(raw.Time),
-		I: raw.I,
-		Z: raw.Z,
+		Price:  raw.Price,
+		Size:   raw.Size,
+		X:      raw.X,
+		C:      utils.MakeTradeCondition(raw),
+		Time:   utils.ParseStrConvertToEpochNs(raw.Time),
+		I:      raw.I,
+		Z:      raw.Z,
 	}
+}
+
+func removeExtraSpaces(input string) string {
+	insideQuotes := false
+	var result strings.Builder
+
+	for _, char := range input {
+		if char == '"' {
+			insideQuotes = !insideQuotes
+		}
+		if char != ' ' || insideQuotes {
+			result.WriteRune(char)
+		}
+	}
+	return result.String()
 }
 
 func (data *TradeData) FormatTradeLineProtocol() string {
@@ -269,9 +284,11 @@ func (data *TradeData) FormatTradeLineProtocol() string {
 
 	// Tags
 	tags := fmt.Sprintf(`symbol=%s,conditions_str="%s",exchange=%s`, data.Symbol, data.C, data.X)
+	tags = removeExtraSpaces(tags)
 
 	// Fields
 	fields := fmt.Sprintf(`price=%f,size=%d,trade_id=%d,tape="%s"`, data.Price, data.Size, data.I, data.Z)
+	fields = removeExtraSpaces(fields)
 
-	return fmt.Sprintf("%s,%s %s %s", measurement, tags, fields, data.Time)
+	return fmt.Sprintf("%s,%s %s %d", measurement, tags, fields, data.Time)
 }
