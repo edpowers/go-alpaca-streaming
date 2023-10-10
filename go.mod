@@ -8,7 +8,12 @@ require (
 	github.com/xitongsys/parquet-go-source v0.0.0-20230919034749-0b16411e6349
 )
 
-require golang.org/x/exp v0.0.0-20220722155223-a9213eeb770e // indirect
+require (
+	github.com/getsentry/sentry-go v0.25.0 // indirect
+	golang.org/x/exp v0.0.0-20220722155223-a9213eeb770e // indirect
+	golang.org/x/sys v0.8.0 // indirect
+	golang.org/x/text v0.9.0 // indirect
+)
 
 require (
 	github.com/apache/arrow/go/arrow v0.0.0-20211112161151-bc219186db40 // indirect

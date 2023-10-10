@@ -91,8 +91,14 @@ func RunWebSocketClient(wg *sync.WaitGroup) {
 	wg.Add(1) // Increment the counter
 	defer wg.Done()
 
+	// Instantiate.
+	telegraf.SetupTelegrafConnection()
+	defer telegraf.CloseTelegrafConnection()
+
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer cancel() // Will be called last in deferred functions.
+	// Deferred functions are LIFO (Last in First Out).
+
 	// Prepare WebSocket URL
 	u := url.URL{Scheme: "wss", Host: "stream.data.alpaca.markets", Path: "/v2/sip"}
 
@@ -107,23 +113,15 @@ func RunWebSocketClient(wg *sync.WaitGroup) {
 		log.Fatalf("Failed to connect: %v", err)
 		return
 	}
-	defer conn.Close()
+	defer func() { // Defer the close till after the function returns
+		conn.Close()
+		cancel() // Cancel the context when you're done
+	}()
 
 	if !authenticate(conn) {
 		log.Fatalf("Authentication failed. Exiting. %v", resp)
 		return
 	}
-
-	/*
-		// Prepare and send authentication data
-		authData := map[string]interface{}{
-			"action": "auth",
-			// "key":    os.Getenv("ALPACA_API_KEY"),
-			// "secret": os.Getenv("ALPACA_API_SECRET"),
-			"key":    "PKQSHIK7LOCNHMK36ZVP",
-			"secret": "qSBkZcKND0mJhy0E3ZH0evnUIKJRDdKlPBtwzf7q",
-		}
-	*/
 
 	authenticator := WebSocketAuthenticator{conn: conn}
 	authSuccess, err := authenticator.WaitForAuthentication()
@@ -168,6 +166,15 @@ func RunWebSocketClient(wg *sync.WaitGroup) {
 		defer wg.Done() // Decrement counter when goroutine completes
 		// Initialize a flag to check if "success" message is received
 		successReceived := false
+
+		// Set up the semaphore to have at most 10 concurrent goroutines
+		sem := make(chan struct{}, 10) // max 10 concurrent goroutines
+		// Initiate the batch.
+		var batch []utils.RawTrade
+
+		// Set up the batch size
+		batchSize := 100
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -177,8 +184,9 @@ func RunWebSocketClient(wg *sync.WaitGroup) {
 				// log.Println("Reading message.")
 				_, message, err := conn.ReadMessage()
 				if err != nil {
-					log.Printf("Error reading raw message: %v", err)
-					continue
+					log.Printf("Error reading raw message: %v %s", err, message)
+					cancel() // Cancel the context on an error
+					return   // Exit the goroutine
 				}
 
 				// receivedBytes := []byte(message)
@@ -194,11 +202,22 @@ func RunWebSocketClient(wg *sync.WaitGroup) {
 						continue
 					}
 
+					/// This is where we send the trade data to the rest
+					// of the application for processing.
 					for _, trade := range trades {
-						// For debugging:
-						// log.Println("Handling trade: %v %v %v", trade, trades, message)
-						handleWebSocket(trade)
+						batch = append(batch, trade)
+
+						if len(batch) >= batchSize {
+							sem <- struct{}{}
+							localBatch := batch // Create a local copy of the batch
+							go func(batch []utils.RawTrade) {
+								handleWebSocketBatch(batch)
+								<-sem // Release semaphore
+							}(localBatch)
+							batch = nil // Reset the batch
+						}
 					}
+
 					continue
 				} else {
 					// log.Println("Processing as GenericMessage. %v", message)
@@ -222,10 +241,43 @@ func RunWebSocketClient(wg *sync.WaitGroup) {
 					}
 				}
 			}
+
+			// Process the remaining trades, if there are any, after exiting the loop
+			if len(batch) > 0 {
+				handleWebSocketBatch(batch)
+				batch = nil // Reset the batch for clarity, though not strictly necessary here
+			}
+
 		}
+
 	}(ctx, conn)
 
 	wg.Wait() // Wait for all goroutines to finish
+}
+
+// handleWebSocketBatch processes a slice of RawTrade objects.
+func handleWebSocketBatch(rawTrades []utils.RawTrade) {
+	var validLineProtocols []string
+
+	// Iterate over each RawTrade to convert and validate
+	for _, raw := range rawTrades {
+		convertedData := ConvertToTradeData(raw)
+		lineProtocol := convertedData.FormatTradeLineProtocol()
+
+		if telegraf.IsValidLineProtocol(lineProtocol) {
+			validLineProtocols = append(validLineProtocols, lineProtocol)
+		} else {
+			log.Println("Invalid line protocol:", lineProtocol)
+		}
+	}
+
+	// Send all valid line protocols to Telegraf
+	if len(validLineProtocols) > 0 {
+		if err := telegraf.SendToTelegraf(validLineProtocols); err != nil {
+			log.Println("Error sending batch to Telegraf:", err)
+			log.Println("Failed trade data:", validLineProtocols)
+		}
+	}
 }
 
 func handleWebSocket(raw utils.RawTrade) {
@@ -263,32 +315,52 @@ func ConvertToTradeData(raw utils.RawTrade) *TradeData {
 	}
 }
 
-func removeExtraSpaces(input string) string {
-	insideQuotes := false
+// Escapes special characters and remove quotes
+func formatForInfluxDB(input string) string {
 	var result strings.Builder
+	insideQuotes := false
 
 	for _, char := range input {
-		if char == '"' {
+		switch char {
+		case '"':
 			insideQuotes = !insideQuotes
+			// Skip the quote itself
+			continue
+		case ' ', ',', '=':
+			// Skip spaces, commas, and equal signs if inside quotes or not inside quotes
+			if insideQuotes {
+				continue
+			}
 		}
-		if char != ' ' || insideQuotes {
-			result.WriteRune(char)
-		}
+		result.WriteRune(char)
 	}
+
 	return result.String()
+
+}
+
+// RemoveSpaces removes all spaces from a given string.
+func removeSpaces(input string) string {
+	return strings.ReplaceAll(input, " ", "")
 }
 
 func (data *TradeData) FormatTradeLineProtocol() string {
 	// Measurement
 	measurement := "alpaca_equities_streaming_trades"
 
+	// Prepare trade condition
+	condition := removeSpaces(data.C)
+
 	// Tags
-	tags := fmt.Sprintf(`symbol=%s,conditions_str="%s",exchange=%s`, data.Symbol, data.C, data.X)
-	tags = removeExtraSpaces(tags)
+	tags := fmt.Sprintf("symbol=%s,conditions_str=\"%s\",exchange=%s", data.Symbol, condition, data.X)
+	tags = removeSpaces(tags)
 
 	// Fields
-	fields := fmt.Sprintf(`price=%f,size=%d,trade_id=%d,tape="%s"`, data.Price, data.Size, data.I, data.Z)
-	fields = removeExtraSpaces(fields)
+	fields := fmt.Sprintf("price=%f,size=%d,trade_id=%d,tape=\"%s\"", data.Price, data.Size, data.I, data.Z)
+	fields = removeSpaces(fields)
 
-	return fmt.Sprintf("%s,%s %s %d", measurement, tags, fields, data.Time)
+	// Time
+	time := data.Time // Assuming it's already in epoch nanoseconds
+
+	return fmt.Sprintf("%s,%s %s %d", measurement, tags, fields, time)
 }
