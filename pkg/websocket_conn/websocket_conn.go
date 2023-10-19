@@ -280,26 +280,6 @@ func handleWebSocketBatch(rawTrades []utils.RawTrade) {
 	}
 }
 
-func handleWebSocket(raw utils.RawTrade) {
-	// Convert Alpaca Trade to TradeData
-	convertedData := ConvertToTradeData(raw)
-	// Convert TradeData to LineProtocol
-	lineProtocol := convertedData.FormatTradeLineProtocol()
-
-	// Validate line protocol
-	if !telegraf.IsValidLineProtocol(lineProtocol) {
-		log.Println("Invalid line protocol:", lineProtocol)
-		return
-	}
-
-	// Send to Telegraf
-	if err := telegraf.SendToTelegraf([]string{lineProtocol}); err != nil {
-		log.Println("Error sending to Telegraf:", err)
-		log.Println("Failed trade data:", lineProtocol)
-		return
-	}
-}
-
 // ConvertToTradeData converts Alpaca StreamTrade to your TradeData type
 func ConvertToTradeData(raw utils.RawTrade) *TradeData {
 	// Assume we have a function to convert data.T to epoch_ns
@@ -313,30 +293,6 @@ func ConvertToTradeData(raw utils.RawTrade) *TradeData {
 		I:      raw.I,
 		Z:      raw.Z,
 	}
-}
-
-// Escapes special characters and remove quotes
-func formatForInfluxDB(input string) string {
-	var result strings.Builder
-	insideQuotes := false
-
-	for _, char := range input {
-		switch char {
-		case '"':
-			insideQuotes = !insideQuotes
-			// Skip the quote itself
-			continue
-		case ' ', ',', '=':
-			// Skip spaces, commas, and equal signs if inside quotes or not inside quotes
-			if insideQuotes {
-				continue
-			}
-		}
-		result.WriteRune(char)
-	}
-
-	return result.String()
-
 }
 
 // RemoveSpaces removes all spaces from a given string.
@@ -363,4 +319,25 @@ func (data *TradeData) FormatTradeLineProtocol() string {
 	time := data.Time // Assuming it's already in epoch nanoseconds
 
 	return fmt.Sprintf("%s,%s %s %d", measurement, tags, fields, time)
+}
+
+// Unused
+func handleWebSocket(raw utils.RawTrade) {
+	// Convert Alpaca Trade to TradeData
+	convertedData := ConvertToTradeData(raw)
+	// Convert TradeData to LineProtocol
+	lineProtocol := convertedData.FormatTradeLineProtocol()
+
+	// Validate line protocol
+	if !telegraf.IsValidLineProtocol(lineProtocol) {
+		log.Println("Invalid line protocol:", lineProtocol)
+		return
+	}
+
+	// Send to Telegraf
+	if err := telegraf.SendToTelegraf([]string{lineProtocol}); err != nil {
+		log.Println("Error sending to Telegraf:", err)
+		log.Println("Failed trade data:", lineProtocol)
+		return
+	}
 }

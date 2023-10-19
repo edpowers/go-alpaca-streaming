@@ -1,4 +1,4 @@
-Adaptation of the Websocket Client in Go.
+Adaptation of the Websocket Client in Go, writing to Telegraf via Line Protocol
 
 ## Usage
 
